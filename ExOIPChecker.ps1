@@ -7,7 +7,9 @@
     https://support.office.com/de-de/article/verwalten-von-office-365-endpunkten-99cab9d4-ef59-4207-9f2b-3728eb46bf9a?ui=de-DE&rs=de-DE&ad=DE#ID0EACAAA=4._Webdienst
     Author: a.bohren@icewolf.ch http://blog.icewolf.ch 
     V1.1 Andres Bohren - Initial Version
-    
+	at Promise.all.then.arr (C:\Users\a.bohren\.vscode\extensions\knisterpeter.vscode-github-0.30.0\node_modules\execa\index.js:277:16)
+.LINK
+    Check https://github.com/BohrenAn/ExOIPChecker
 #>
 
 #Define the path, where the file gets saved. It just takes the location of the script.
