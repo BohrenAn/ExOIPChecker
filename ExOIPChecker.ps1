@@ -22,6 +22,32 @@ $path = Split-Path -parent $PSCommandPath
 $smtptochange = @("changes1@foo.com","changes2@foo.com")
 [string]$body = ""
 
+[bool]$UpdateExchangeConnector = True
+
+###############################################################################
+# Connect ExchangeOnPrem
+###############################################################################
+Function Connect-ExchangeOnPrem
+{
+
+}
+
+###############################################################################
+# Disconnect ExchangeOnPrem
+###############################################################################
+Function Disconnect-ExchangeOnPrem
+{
+
+}
+
+###############################################################################
+# This Function Updates the Office 365 Connector
+###############################################################################
+Function Update-ExchangeConnector
+{
+
+}
+
 #Where the IPs get stored
 [object[]]$changedIps
 $removedIps = [System.Collections.ArrayList]@()
