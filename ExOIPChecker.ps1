@@ -1,21 +1,31 @@
 ###############################################################################
 # ExOIPChecker - Exchange Online IP Checker
 # Andres Bohren / www.icewolf.ch / blog.icewolf.ch / a.bohren@icewolf.ch
-# Version 1.0 / 10.06.2019 - Initial Version a.bohren@icewolf.ch
+# Version 1.0 / 10.06.2019 - Initial Version 
+# Version 1.1 / 08.05.2020 - Autoupdate ReceiveConnector 
+# Version 1.2 / 24.06.2020 - Cleanup Script
 ###############################################################################
-
 <#
 .SYNOPSIS
-    Compare the Exchange Online IP list with the locally saved list to detect changes.
+    Compare the Exchange Online Protection IP list with the locally saved list to detect changes.
+	The User must have Exchange Organisation Admin Permissions to Update Exchange Receive Connector
+	
 .DESCRIPTION
-    This script takes the Exchange Online IP list(https://support.content.office.net/en-us/static/O365IPAddresses.xml) and saves it locally. The next time, it compares the local list to the online one, to detect if there were changes. If there were, it sends a mail to the INIT Security group to notify them. If there weren't any changes, it still send a mail, just to say that it still works.    
-    The Script is now Using the REST Webservice to retreive the IP's
-    https://support.office.com/de-de/article/verwalten-von-office-365-endpunkten-99cab9d4-ef59-4207-9f2b-3728eb46bf9a?ui=de-DE&rs=de-DE&ad=DE#ID0EACAAA=4._Webdienst
-    Author: a.bohren@icewolf.ch http://blog.icewolf.ch 
-    V1.1 Andres Bohren - Initial Version
-	at Promise.all.then.arr (C:\Users\a.bohren\.vscode\extensions\knisterpeter.vscode-github-0.30.0\node_modules\execa\index.js:277:16)
+    This script takes the REST API to extract the Exchange Online IP's and saves them locally.
+    https://docs.microsoft.com/en-us/office365/enterprise/urls-and-ip-address-ranges
+    https://docs.microsoft.com/en-us/office365/enterprise/office-365-ip-web-service
+
+	
+	The next time, it compares the local list to the online one, to detect if there were changes. 
+	If there are Changes, it sends a mail to the Change Recipients to notify them.
+	If there weren't any changes, it still send a mail, just to say that the scipt was running.
+
+.EXAMPLE
+	./ExOIPChecker.ps1
+
 .LINK
     Check https://github.com/BohrenAn/ExOIPChecker
+
 #>
 
 ###############################################################################
@@ -25,7 +35,7 @@ Function Connect-ExchangeOnPrem
 {
     PARAM 
     (
-        [string]$OnPremExchangeServer = $OnPremExchangeServer
+        [parameter(Mandatory=$true)][string]$OnPremExchangeServer
     )
 
     #Create PSSession
@@ -40,16 +50,60 @@ Function Connect-ExchangeOnPrem
 ###############################################################################
 Function Disconnect-ExchangeOnPrem
 {
-    Get-PSSession 
-    Remove-PSSession $MySession
+    Get-PSSession | where {$_.ConfigurationName -eq "Microsoft.Exchange"} | Remove-PSSession
 }
 
 ###############################################################################
-# This Function Updates the Office 365 Connector
+# This Function Updates the 365 Receive Connector
+# Only the EOP IP's are allowed
 ###############################################################################
 Function Update-ExchangeConnector
 {
 
+    PARAM 
+    (
+        [array]$OnPremReceiveConnector
+    )
+
+		#Connect to ExchangeOnPrem
+		Connect-ExchangeOnPrem -OnPremExchangeServer $OnPremExchangeServer
+		
+        Try {
+
+            [Array]$EOPIPv4 = @()
+            $EOPIPv4 = (Get-Content "$path\addresses.txt")
+            #Localhost needed for Managed Availability
+	        $EOPIPv4 += "127.0.0.1"
+            $EOPIPv4 += $CustomRemoteIPRanges
+            
+            foreach ($ReceiveConnector in $OnPremReceiveConnector)
+            {
+                Set-ReceiveConnector -identity $ReceiveConnector -RemoteIPRanges $EOPIPv4
+            }
+
+		} catch {
+			write-host "ERROR: An error has occurred: `r`n $_.Exception.Message" -foregroundColor Red
+		} finally {
+			#Disconnect to ExchangeOnPrem
+			Disconnect-ExchangeOnPrem
+		}
+		
+}
+
+###############################################################################
+# This Function Sends the Admin Mail
+###############################################################################
+Function Send-AdminMail
+{
+
+    If ($Changed -eq $true)
+    {
+        #Send the update Mail 
+        Send-MailMessage -SmtpServer $smtpserver -From $smtpfrom -To $smtptochange -Subject "EXO IP Checker - IP's changed Warning" -Body ("<span style='font-family:Arial;font-size:11pt'>There were some changes in the EXO IP list.<br />"+ $body +"</span>") -BodyAsHtml
+    } else {
+        #If there are no changes, send a mail so that the admins know, that the script still works
+        Send-MailMessage -SmtpServer $smtpserver -From $smtpfrom -To $smtpto -Subject "EXO IP Checker - INFO" -Body ("<span style='font-family:Arial;font-size:11pt'>There were no changes, I am just letting you know that I still work.</span>") -BodyAsHtml
+    }
 }
 
 ###############################################################################
@@ -61,26 +115,27 @@ Function Check-ExOIPs
     [object[]]$changedIps
     $removedIps = [System.Collections.ArrayList]@()
     $addedIps = [System.Collections.ArrayList]@()
+    
+    #Create a GUID if not existent and save it in the Registry
+    If ((Test-Path "HKCU:\Software\ExOIPChecker") -eq $false)
+    {
+        #$GUID = (new-guid).guid
+	$GUID = ([guid]::NewGuid()).guid
+        New-Item -Path HKCU:\Software\ExOIPChecker
+        Set-ItemProperty -Path HKCU:\Software\ExOIPChecker -Name Guid -Value $GUID
+	$ClientRequestId = $GUID
+    } else {
+        $ClientRequestId = (Get-ItemProperty -Path HKCU:\Software\ExOIPChecker -Name guid).guid
+    }
 
-    #Get the Version of the Last Change 
-    #$ClientRequestId = new-guid
-    #$ClientRequestId = "045bb3bb-dfcf-4359-a597-b16f6281b1ff"
-    #8b9387ca-f435-4296-ae88-a1fe669de6c4 ICE10
-    #$uri = "https://endpoints.office.com/version/O365Worldwide?ClientRequestId=$ClientRequestId"
-    #$Result = Invoke-RestMethod -Method GET -uri $uri
-    #$Lastchange = $Result.latest #2018033000
-    #Write-Host "LastChange: $Lastchange"
-    #$Lastchange | Out-File "C:\Scripts\TaskScheduledScripts\Daily-ExoIPchecker\o365ipversion.txt"
 
     #Get Exchange Endpoints
-    #$uri = "https://endpoints.office.com/endpoints/O365Worldwide?ServiceAreas=Exchange&ClientRequestId=$ClientRequestId"
-    #$Result = Invoke-RestMethod -Method GET -uri $uri
+    $uri = "https://endpoints.office.com/endpoints/worldwide?ServiceAreas=Exchange&NoIPv6=true&ClientRequestId=$ClientRequestId"
+    Write-Host "DEBUG: URL: $uri"
+    $Result = Invoke-RestMethod -Method GET -uri $uri
 
-    #Exchange without Common --> IP's only
-    #$ips = ($Result | where {$_.serviceArea -eq "Exchange"}).ips
-
-    #Exchange without Common --> IPv4 IP's only
-    #$addresses = $ips | where {$_ -notmatch ":"}
+    #EOP IP's
+    $addresses = ($Result | where {$_.urls -match "mail.protection.outlook.com"}).ips | Sort-Object -Unique
 
     #Check
     if(Test-Path "$path\addresses.txt"){
@@ -103,36 +158,17 @@ Function Check-ExOIPs
                 $removedIps = $removedIps -join "`n"
                 $body = $body + "<strong><br />These IPs were removed:<br /></strong>" + $removedIps
             }       
-            return $true
 
             #Save the changes locally
             $addresses > $path\addresses.txt
+			return $true
+			
         }else{
             return $false
         }
     }else{
         #If the file does not exist yet, create it
         $addresses > "$path\addresses.txt"
-    }
-}
-
-###############################################################################
-# This Function gets the Exchange Online IP's from Office 365 REST API
-###############################################################################
-Function Send-AdminMail
-{
-    PARAM 
-    (
-        [bool]$Changes = $Changes
-    )
-
-    If ($Changes -eq $true)
-    {
-        #Send the update Mail 
-        Send-MailMessage -SmtpServer $smtpserver -From $smtpfrom -To $smtptochange -Subject "EXO IP Checker - IP's changed Warning" -Body ("<span style='font-family:Arial;font-size:11pt'>There were some changes in the EXO IP list.<br />"+ $body +"</span>") -BodyAsHtml
-    } else {
-        #If there are no changes, send a mail so that the admins know, that the script still works
-        Send-MailMessage -SmtpServer $smtpserver -From $smtpfrom -To $smtpto -Subject "EXO IP Checker - INFO" -Body ("<span style='font-family:Arial;font-size:11pt'>There were no changes, I am just letting you know that I still work.</span>") -BodyAsHtml
     }
 }
 
@@ -143,28 +179,47 @@ Function Send-AdminMail
 #Define the path, where the file gets saved. It just takes the location of the script.
 $path = Split-Path -parent $PSCommandPath
 
-#Mailing related variables
-[string]$smtpserver = "SMTPServer.domain.tld"
-[string]$smtpfrom = "sender@foo.com"
-[string]$smtpto = "recipient@foo.com"
-$smtptochange = @("changes1@foo.com","changes2@foo.com")
+#Check Parameter RegisterScheduledTask
+If ($RegisterScheduledTask -eq $true)
+{
+	#Write-Host "DEBUG: PSCommandPath > $PSCommandPath"
+	Write-Host "INFO: Create-ScheduledTask"
+	Create-ScheduledTask -Scriptpath $PSCommandPath
+}
+
+#Variables
+[string]$smtpserver = "SERVER OR IP"
+[string]$smtpfrom = "Sender@domain.tld"
+[string]$smtpto = "recipient@domain.tld"
+$smtptochange = @("Changes@domain.tld","recipient@domain.tld")
 [string]$body = ""
 
-[bool]$UpdateExchangeConnector = $True
+[bool]$UpdateExchangeConnector = $true
 [string]$OnPremExchangeServer = "ICESRV06"
+[Array]$OnPremReceiveConnector = @()
+$OnPremReceiveConnector = "ICESRV06\Default Frontend ICESRV06"
+[Array]$CustomRemoteIPRanges = @()
+$CustomRemoteIPRanges = "172.21.175.0/24"
 
-#Main Script
+#Check EOP IP's
 $Changed = Check-ExOIPs
 If ($Changed -eq $true)
 {
     #Changes detected
-    If ($UpdateExchangeConnector -eq $true)
-    {
-        Connect-ExchangeOnPrem -OnPremExchangeServer $OnPremExchangeServer
-        Update-ExchangeConnector
-        Disconnect-ExchangeOnPrem -OnPremExchangeServer $OnPremExchangeServer
-    }
+    Write-Host "INFO: Changes detected"
 } else {
     #No Changes Detected
+    Write-Host "INFO: No Changes detected" -ForegroundColor Green
+    get-Content "$path\addresses.txt"
 }
+
+
+If ($UpdateExchangeConnector -eq $true)
+{
+	Write-Host "INFO: Update Exchange Receive Connector"
+        Update-ExchangeConnector -OnPremReceiveConnector $OnPremReceiveConnector
+}
+
+Write-Host "INFO: Sending Admin Mail"
+#Call Function Send-AdminMail
 Send-AdminMail
